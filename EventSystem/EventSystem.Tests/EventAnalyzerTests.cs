@@ -5,7 +5,7 @@ using Verify = Microsoft.CodeAnalysis.CSharp.Testing.CSharpAnalyzerVerifier<Even
 
 namespace EventSystem.Tests;
 
-using Utilities = Shared.Tests.TestUtilities<EventAnalyzer, EventCodeFixProvider>;
+using Utilities = Shared.Tests.AnalyzerTester<EventAnalyzer, EventCodeFixProvider>;
 
 public class EventAnalyzerTests
 {

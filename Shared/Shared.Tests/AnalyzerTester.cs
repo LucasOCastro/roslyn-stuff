@@ -7,7 +7,7 @@ using Microsoft.CodeAnalysis.Testing;
 
 namespace Shared.Tests;
 
-public static class TestUtilities<TAnalyzer, TCodeFix>
+public static class AnalyzerTester<TAnalyzer, TCodeFix>
     where TAnalyzer : DiagnosticAnalyzer, new()
     where TCodeFix : CodeFixProvider, new()
 {

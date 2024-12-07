@@ -1,6 +1,7 @@
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Shared.Tests;
 using Xunit;
 
 namespace EventSystem.Tests;
@@ -36,7 +37,7 @@ namespace TestNamespace
         {
             OnEventRaised?.Invoke(Events.OnDoStuff, ev);
             OnDoStuff?.Invoke(ev);
-            OnDoStuffNoArgs?.Invoke(ev);
+            OnDoStuffNoArgs?.Invoke();
         }
         public enum Events
         {
@@ -94,9 +95,6 @@ namespace TestNamespace
 
         // All generated files can be found in 'RunResults.GeneratedTrees'.
         var generatedHandlerFileSyntax = runResult.GeneratedTrees.Single(t => t.FilePath.EndsWith("EventHandler.g.cs"));
-
-        // Complex generators should be tested using text comparison.
-        var result = generatedHandlerFileSyntax.GetText().ToString();
-        Assert.Equal(ExpectedGeneratedHandlerClassText, result, ignoreLineEndingDifferences: true);
+        TestUtils.AssertEqual(ExpectedGeneratedHandlerClassText, generatedHandlerFileSyntax);
     }
 }
