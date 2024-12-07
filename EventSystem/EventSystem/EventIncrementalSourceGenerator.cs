@@ -7,6 +7,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using Shared;
+using Shared.CodeBuilder;
 
 namespace EventSystem;
 
@@ -52,111 +53,126 @@ public class EventIncrementalSourceGenerator : IIncrementalGenerator
         if (DiagnosticRecord.ReportMany(source.AllDiagnostics, spc))
             return;
         
+        Dictionary<EventStructRecord, (string Trim, string Delegate, string Event, string Full)> nameCache = [];
+
         string staticStr = source.Type.IsStatic ? "static " : "";
         
-        Dictionary<EventStructRecord, (string Trim, string Delegate, string Event, string Full)> nameCache = [];
-        
-        var builder = ClassStringBuilder.FromTypeRecord(source.Type);
-        
-        //Any delegate
-        builder.InitLine();
-        builder.PushMethodSignature("public delegate void", AnyEventDelegateName, $"{EnumName} eventType", $"{InterfaceName} ev");
-        builder.Push(';');
-        //Any Event line
-        builder.PushLine($"public {staticStr}event {AnyEventDelegateName} {AnyEventName};");
-        
-        
-        foreach (var e in source.Events)
+        var builder = new CodeBuilder();
+        using (new TypeScope(builder, source.Type))
         {
-            string typeName = e.Type.TypeName;
-            string trimmedTypeName = typeName;
-            if (typeName.EndsWith("event", StringComparison.OrdinalIgnoreCase))
-                trimmedTypeName = trimmedTypeName.Substring(0, typeName.Length - 5);
-            if (typeName.StartsWith("on", StringComparison.OrdinalIgnoreCase))
-                trimmedTypeName = trimmedTypeName.Substring(2);
-            string delegateName = $"On{trimmedTypeName}Delegate";
-            string eventName = $"On{trimmedTypeName}";
-            string fullName = e.Type.DisplayName;
-            nameCache[e] = (trimmedTypeName, delegateName, eventName, fullName);
+            // Any delegate
+            builder.PushLine($"public delegate void {AnyEventDelegateName}({EnumName} eventType, {InterfaceName} ev);");
             
-            //Delegate declaration
-            builder.InitLine();
-            builder.PushMethodSignature("public delegate void", delegateName, fullName + " ev");
-            builder.Push(';');
-            //Event line
-            builder.PushLine($"public {staticStr}event {delegateName} {eventName};");
-            //Parameterless event
-            builder.PushLine($"public {staticStr}event System.Action {eventName}{ParameterlessSuffix};");
+            // Any event line
+            builder.PushLine($"public {staticStr}event {AnyEventDelegateName} {AnyEventName};");
+
+            foreach (var e in source.Events)
+            {
+                string typeName = e.Type.TypeName;
+                string trimmedTypeName = typeName;
+                // ExampleEvent -> Example
+                if (typeName.EndsWith("event", StringComparison.OrdinalIgnoreCase))
+                    trimmedTypeName = trimmedTypeName.Substring(0, typeName.Length - 5);
+                // OnExample -> Example
+                if (typeName.StartsWith("on", StringComparison.OrdinalIgnoreCase))
+                    trimmedTypeName = trimmedTypeName.Substring(2);
+                string delegateName = $"On{trimmedTypeName}Delegate";
+                string eventName = $"On{trimmedTypeName}";
+                string fullName = e.Type.DisplayName;
+                nameCache[e] = (trimmedTypeName, delegateName, eventName, fullName);
+
+                //Delegate declaration
+                builder.PushLine($"public delegate void {delegateName}({fullName} ev);");
+
+                //Event line
+                builder.PushLine($"public {staticStr}event {delegateName} {eventName};");
+
+                //Parameterless event
+                builder.PushLine($"public {staticStr}event System.Action {eventName}{ParameterlessSuffix};");
+
+                //Invoke method
+                builder.PushLine($"public {staticStr}void {InvokeMethodName}({fullName} ev)");
+                using (new BracesScope(builder))
+                {
+                    builder.PushLine($"{AnyEventName}?.Invoke({EnumName}.{eventName}, ev);");
+                    builder.PushLine($"{eventName}?.Invoke(ev);");
+                    builder.PushLine($"{eventName}{ParameterlessSuffix}?.Invoke();");
+                }
+            }
+
+            // Generate enum
+            builder.PushLine($"public enum {EnumName}");
+            using (new BracesScope(builder))
+            {
+                foreach (var e in source.Events)
+                {
+                    builder.PushLine($"{nameCache[e].Event},");
+                }
+            }
             
-            //Invoke method
-            builder.OpenMethod($"public {staticStr}void", InvokeMethodName, fullName + " ev");
-            builder.PushMethodInvocation($"{AnyEventName}?.Invoke", $"{EnumName}.{eventName}", "ev");
-            builder.PushMethodInvocation($"{eventName}?.Invoke", "ev");
-            builder.PushMethodInvocation($"{eventName}{ParameterlessSuffix}?.Invoke", "ev");
-            builder.Close();
+            // Add listener method
+            builder.PushLine($"public {staticStr}void {AddListenerMethodName}({EnumName} eventType, System.Action<{InterfaceName}> listener)");
+            using (new BracesScope(builder))
+            {
+                using (new SwitchScope(builder, "eventType"))
+                {
+                    foreach (var e in source.Events)
+                    {
+                        string caseStr = $"{EnumName}.{nameCache[e].Event}";
+                        using (new SwitchScope.CaseScope(builder, caseStr))
+                        {
+                            builder.PushLine($"{nameCache[e].Event}{ParameterlessSuffix} += listener;");
+                        }
+                    }
+                }
+            }
+            
+            // Remove listener method
+            builder.PushLine($"public {staticStr}void {RemoveListenerMethodName}({EnumName} eventType, System.Action<{InterfaceName}> listener)");
+            using (new BracesScope(builder))
+            {
+                using (new SwitchScope(builder, "eventType"))
+                {
+                    foreach (var e in source.Events)
+                    {
+                        string caseStr = $"{EnumName}.{nameCache[e].Event}";
+                        using (new SwitchScope.CaseScope(builder, caseStr))
+                        {
+                            builder.PushLine($"{nameCache[e].Event}{ParameterlessSuffix} -= listener;");
+                        }
+                    }
+                } 
+            }
+            
+            // Generate event interface
+            builder.PushLine($"public interface {InterfaceName}");
+            using (new BracesScope(builder))
+            {
+                builder.PushLine($"{EnumName} {InterfaceEnumTypeName} {{ get; }}");
+            }
         }
-        
-        //Generate enum
-        builder.PushLine($"public enum {EnumName}");
-        builder.Open();
-        foreach (var e in source.Events)
-        {
-            builder.PushLine(nameCache[e].Event);
-            builder.Push(',');
-        }
-        builder.Close();
-        
-        //Add listener method
-        const string eventEnumParamName = "eventType";
-        builder.OpenMethod($"public {staticStr}void", AddListenerMethodName, $"{EnumName} {eventEnumParamName}", $"System.Action<{InterfaceName}> listener");
-        builder.OpenSwitch(eventEnumParamName);
-        foreach (var e in source.Events)
-        {
-            builder.OpenSwitchCase(EnumName + '.' + nameCache[e].Event);
-            builder.PushAssignment(nameCache[e].Event + ParameterlessSuffix, "+=");
-            builder.Push("listener;");
-            builder.CloseSwitchCase();
-        }
-        builder.Close();
-        builder.Close();
-        
-        //Remove listener method
-        builder.OpenMethod($"public {staticStr}void", RemoveListenerMethodName, $"{EnumName} {eventEnumParamName}", $"System.Action<{InterfaceName}> listener");
-        builder.OpenSwitch(eventEnumParamName);
-        foreach (var e in source.Events)
-        {
-            builder.OpenSwitchCase(EnumName + '.' + nameCache[e].Event);
-            builder.PushAssignment(nameCache[e].Event + ParameterlessSuffix, "-=");
-            builder.Push("listener;");
-            builder.CloseSwitchCase();
-        }
-        builder.Close();
-        builder.Close();
-        
-        //Generate event interface
-        builder.PushLine($"public interface {InterfaceName}");
-        builder.Open();
-        builder.PushLine($"{EnumName} {InterfaceEnumTypeName} {{ get; }}");
-        builder.Close();
 
         string srcCode = "// <auto-generated/>\n" + builder.End();
         spc.AddSource($"{source.Type.DisplayName}.g.cs", SourceText.From(srcCode, Encoding.UTF8));
 
+        // ---- Partial event ---- //
+        
         string interfaceName = $"{source.Type.DisplayName}.{InterfaceName}";
         //Generate event partial
         foreach (var e in source.Events)
         {
-            ClassStringBuilder eventBuilder = ClassStringBuilder.FromTypeRecord(e.Type, isStruct: true, interfaceName);
-
-            string enumType = $"{source.Type.DisplayName}.{EnumName}";
-            string enumValue = $"{enumType}.{nameCache[e].Event}";
-            //Const enum
-            eventBuilder.PushAssignment($"public const {enumType} EnumValue");
-            eventBuilder.Push(enumValue);
-            eventBuilder.Push(';');
-            
-            //Overriden enum
-            eventBuilder.PushLine($"public {enumType} {InterfaceEnumTypeName} => {enumValue};");
+            CodeBuilder eventBuilder = new();
+            using (new TypeScope(eventBuilder, e.Type, implements: [interfaceName]))
+            {
+                string enumType = $"{source.Type.DisplayName}.{EnumName}";
+                string enumValue = $"{enumType}.{nameCache[e].Event}";
+                
+                //Const enum
+                eventBuilder.PushLine($"public const {enumType} EnumValue = {enumValue};");
+                
+                //Overriden enum
+                eventBuilder.PushLine($"public {enumType} {InterfaceEnumTypeName} => EnumValue;");
+            }
             
             string eventSrcCode = "// <auto-generated/>\n" + eventBuilder.End();
             spc.AddSource($"{nameCache[e].Full}.g.cs", SourceText.From(eventSrcCode, Encoding.UTF8));
